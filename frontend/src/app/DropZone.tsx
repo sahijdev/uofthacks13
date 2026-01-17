@@ -6,13 +6,18 @@ type Props = { onFiles?: (file: File) => void };
 export default function DropZone({ onFiles }: Props) {
   const [hover, setHover] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFiles = useCallback(
     (files: FileList | null) => {
       if (!files) return;
       const image = Array.from(files).find((f) => f.type.startsWith("image/"));
-      if (!image) return;
+      if (!image) {
+        setError("Only image files are accepted.");
+        return;
+      }
+      setError(null);
       onFiles?.(image);
       setPreview((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -57,6 +62,7 @@ export default function DropZone({ onFiles }: Props) {
         onChange={(e) => handleFiles(e.target.files)}
       />
       <p className="text-sm text-zinc-600">Drag & drop an image of your Lego inventory here!</p>
+      {error && <p className="text-xs text-red-500">{error}</p>}
       {preview && (
         <div className="flex w-full justify-center">
           <img src={preview} alt="Preview" className="h-40 w-auto rounded object-contain" />
