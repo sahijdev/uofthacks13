@@ -6,6 +6,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { compileScadToStlBytes } from "../lib/openscad";
+import { useSearchParams } from "next/navigation";
 
 // ============================================================
 // LEGO constants (mm)
@@ -299,7 +300,7 @@ export default function ThreeEnvironment() {
     wall_gap: 0.02,
   });
 
-  const opensCAD_DSL_Input = `/* Multi-template Brick DSL example */
+  let opensCAD_DSL_Input = `/* Multi-template Brick DSL example */
 
 brick("2x4", xStud=0, yStud=0, zLevel=0, rotY=0, color=[0.85,0.1,0.1]);
 brick("2x2", xStud=2, yStud=0, zLevel=0, rotY=0, color=[0.1,0.7,0.2]);
@@ -311,7 +312,10 @@ brick("slope_45_2x2", xStud=6, yStud=0, zLevel=0, rotY=90, color=[0.6,0.6,0.6]);
 
 brick("1x1", xMm=10.2, yMm=6.7, zMm=9.6, rot=[0,15,0], color=[0.2,0.9,0.3]);`;
 
-  const [scadInput, setScadInput] = useState<string>(() => opensCAD_DSL_Input.trim());
+  const searchParams = useSearchParams();
+  const dslParam = searchParams.get("dsl");
+
+  const [scadInput, setScadInput] = useState(() => dslParam ? decodeURIComponent(dslParam) : opensCAD_DSL_Input);
 
   const parsedBricks = useMemo(() => parseBrickDSL(scadInput), [scadInput]);
   const [bricks, setBricks] = useState<Brick[]>(parsedBricks);

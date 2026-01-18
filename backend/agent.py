@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from typing import Literal
 import os
 import backboard
+from fastapi.responses import StreamingResponse
+import json
 
 
 # Graph state
@@ -29,12 +31,40 @@ class Feedback(BaseModel):
         description="If the build plan is not adequate, provide feedback on how to improve it.",
     )
 
-def call_workflow(user_request: str, pieces_list: str):
-    state = workflow.invoke(
-    {"user_request": HumanMessage(content=user_request),
-     "pieces_list": pieces_list}
-    )
-    return state
+def stream_workflow(user_request: str, pieces_list: str):
+    """
+    Generator that yields SSE events with JSON messages
+    for each step of the workflow: architect, evaluator, builder.
+    """
+    state: State = {
+        "user_request": HumanMessage(content=user_request),
+        "pieces_list": pieces_list,
+        "build_plan": "",
+        "feedback": "",
+        "grade": "",
+        "final_script": "",
+    }
+
+    # 1️⃣ Architect step
+    msg = architect_agent(state)
+    state["build_plan"] = msg["build_plan"]
+    yield f"data: {json.dumps({'step': 'architect', 'message': state['build_plan'][:200] + '...'})}\n\n"
+
+    # 2️⃣ Evaluator step
+    eval_result = evaluator_agent(state)
+    state.update(eval_result)
+    yield f"data: {json.dumps({'step': 'evaluator', 'message': state['feedback'][:200] + '...'})}\n\n"
+
+    # Loop back if evaluation fails
+    if state["grade"] == "fail":
+        yield f"data: {json.dumps({'step': 'architect', 'message': 'correcting architecture based on evaluator feedback' + '...'})}\n\n"
+
+    # 3️⃣ Builder step
+    yield from builder_agent(state)
+
+    yield f"data: {json.dumps({'step': 'finalizing', 'message': 'Build workflow complete!', 'final_script': state['final_script']})}\n\n"
+
+
 
 # Agent functions
 def architect_agent(state: State):
@@ -44,14 +74,10 @@ def architect_agent(state: State):
     else:
         msg = llm.invoke(f"You are a structural analysis agent who architects lego builds. Given the user request, provide a list of necessary structures for this build (e.g. a house build may need walls, a chimney, etc. depending on the pieces the user has). Carefully consider the number of pieces available. Return the list with the structures as a comma-separated string and after each structure, include in parentheses the exact number of pieces and which pieces are needed for that structure and a concise description of how the pieces should be connected (e.g. 4 black bricks on top of eachother and 3 red bricks on top of that) and MAKE SURE you include how structures should be built relative to each other. For example, the walls should be on the edge of the foundation but still connected, etc. Ensure the total number of pieces does not exceed the available pieces. User request: \"{state['user_request'].content}\" | pieces available: {state['pieces_list']}.")
     
-    print(msg.content)
-    print("----------------------------")
     return {"build_plan": msg.content}
 
 def evaluator_agent(state: State):
     grade = evaluator.invoke(f"You are a lego build evaluator. Given the user request: \"{state['user_request'].content}\", and the build plan: \"{state['build_plan']}\", ensure the quality of the build plan. First, verify that the build plan addresses the user request adequately and gives instructions on how to connect the pieces. There MUST be instructions on where structures are relative to eachother and on how to build each structure in the parentheses, otherwise FAIL THE BUILD PLAN. Next, check that the build plan is feasible given the pieces available: {state['pieces_list']} and that it uses exactly the given pieces or less. Finally, check if the build plan physically makes sense. That is, can all the pieces connect to eachother and can each structure connect to eachother without falling apart? This is the most important part. Make sure pieces do not intersect or take up the same physical space, and make sure the build plan actually encompasses the user request. Evaluate the build plan in this way.")
-    print(grade.feedback)
-    print("----------------------------")
     return {"grade": grade.grade, "feedback": grade.feedback}
 
 def builder_agent(state: State):
@@ -109,13 +135,13 @@ ONLY output valid DSL lines.
 ============================================================
 BRICK DSL FORMAT (REQUIRED):
 
-brick("2x2", xStud=0, yStud=0, zLevel=0, rotY=0, color=[0.9,0.1,0.1]);
+brick("2x2", xStud=0, yStud=0, zLevel=0, rot=[0,90,0], color=[0.9,0.1,0.1]);
 brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]);
 
 Supported fields:
 - kind: first argument (e.g. "2x2")
 - position: either (xStud, yStud, zLevel) OR (xMm, yMm, zMm)
-- rotation: rotY=deg OR rot=[rx,ry,rz]
+- rotation: rot=[0,90,0] ALWAYS
 - color: color=[r,g,b] (0..1)
 ============================================================
 
@@ -141,16 +167,14 @@ Return ONLY Brick DSL lines for THIS structure.
             dsl_lines.append(step_dsl)
             placed_summary.append(structure_name)
 
-        # Optional debug
-        print(f"Added DSL for: {structure_name}")
-        print("----------------------------")
+        yield f"data: {json.dumps({'step': 'builder', 'message': step_dsl[:200]+'...'})}\n\n"
 
     # ==============================
     # Step 3: Final DSL script
     # ==============================
     final_script = "\n".join(dsl_lines)
-
-    return {"final_script": final_script}
+    state["final_script"] = final_script
+    yield f"data: {json.dumps({'step': 'builder', 'message': 'Final script completed!'})}\n\n"
 
 
 # Conditional edge function

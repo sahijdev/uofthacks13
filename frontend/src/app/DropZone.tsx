@@ -36,7 +36,7 @@ export default function DropZone({ onFiles }: Props) {
 
   return (
     <div
-      className={`flex w-full max-w-xl flex-col items-center gap-3 rounded-2xl border-4 border-dashed p-6 text-center transition ${
+      className={`flex w-full mb-3 flex-col items-center gap-3 rounded-2xl border-4 border-dashed p-6 text-center transition ${
         hover
           ? "border-[#ef4444] bg-[#ffe4e6] shadow-[0_12px_0_#b91c1c]"
           : "border-[#1d4ed8] bg-[#e0f2fe] shadow-[0_12px_0_#0f2f86]"

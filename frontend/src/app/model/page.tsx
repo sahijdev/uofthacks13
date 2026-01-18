@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import DropZone from "../DropZone";
 import { useAuth } from "../context/AuthContext";
@@ -46,7 +46,7 @@ const AGENT_STEPS: Record<AgentStep, { label: string; color: string }> = {
   finalizing: { label: "Finalizing OpenSCAD output", color: "#f59e0b" },
 };
 
-function LegoLoadingPopup({ step }: { step: AgentStep }) {
+function LegoLoadingPopup({ step, message }: { step: AgentStep; message?: string }) {
   if (step === "idle") return null;
 
   const meta = AGENT_STEPS[step];
@@ -57,7 +57,6 @@ function LegoLoadingPopup({ step }: { step: AgentStep }) {
         className="relative w-[320px] rounded-2xl border-4 bg-white p-5 shadow-[0_14px_0_rgba(0,0,0,0.25)]"
         style={{ borderColor: meta.color }}
       >
-        {/* LEGO studs */}
         <div className="absolute -top-3 left-4 flex gap-2">
           {[...Array(3)].map((_, i) => (
             <div
@@ -76,6 +75,7 @@ function LegoLoadingPopup({ step }: { step: AgentStep }) {
           >
             {meta.label}
           </p>
+          {message && <p className="text-xs text-slate-600">{message}</p>}
           <p className="text-xs font-semibold text-slate-600">
             Please don’t shake the table 🧱
           </p>
@@ -101,6 +101,51 @@ function buildIdentity(builds: Build[]): string | null {
   return `You lean toward ${top.join(", ")} builds`;
 }
 
+function useAgentStream(
+  onStep: (step: AgentStep, message: string) => void,
+  onFinalScript?: (script: string) => void,
+  onStreamingComplete?: (script: string) => void
+) {
+  const esRef = useRef<EventSource | null>(null);
+
+  const startStream = (prompt: string) => {
+    if (!prompt) return;
+    if (esRef.current) esRef.current.close();
+
+    const url = `http://localhost:8000/stream_build?prompt=${encodeURIComponent(prompt)}`;
+    const es = new EventSource(url);
+    esRef.current = es;
+
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      const { step, message, final_script } = data;
+
+      onStep(step, message);
+
+      if (final_script) {
+        onFinalScript?.(final_script);       // safe call using optional chaining
+        onStreamingComplete?.(final_script); // safe call
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      if (esRef.current === es) esRef.current = null;
+    };
+  };
+
+  const stopStream = () => {
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+  };
+
+  return { startStream, stopStream };
+}
+
+
+
 export default function ModelPage() {
   const { isAuthenticated, initializing, user, logout, token } = useAuth();
   const router = useRouter();
@@ -116,6 +161,14 @@ export default function ModelPage() {
   const [recommendations, setRecommendations] = useState<string[]>([]);
   const confettiRef = useRef<HTMLDivElement | null>(null);
   const [agentStep, setAgentStep] = useState<AgentStep>("idle");
+  const [agentMessage, setAgentMessage] = useState<string>("");
+  const [finalScript, setFinalScript] = useState<string | null>(null);
+
+
+  const handleStep = useCallback((step: AgentStep, message: string) => {
+    setAgentStep(step);
+    setAgentMessage(message);
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -197,50 +250,43 @@ export default function ModelPage() {
     }
   }
 
-  async function saveBuild() {
-    setSaveMessage("");
-    if (!prompt.trim()) {
-      setSaveMessage("Add a prompt first so we know what to save.");
-      return;
-    }
+  const onStreamingComplete = useCallback((script: string) => {
+    setFinalScript(script);
+    const encoded = encodeURIComponent(script);
+    router.push(`/instructions?dsl=${encoded}`);
+  }, [router]);
 
-    setSaving(true);
-    setAgentStep("architect");
+  const { startStream } = useAgentStream(handleStep, onStreamingComplete);
 
-    try {
-      // fake deterministic step timing (matches LangGraph order)
-      setTimeout(() => setAgentStep("evaluator"), 1200);
-      setTimeout(() => setAgentStep("builder"), 2400);
-      setTimeout(() => setAgentStep("finalizing"), 3600);
+async function saveBuild() {
+  setSaving(true);
+  setAgentStep("architect");
+  setAgentMessage("Starting build workflow...");
 
-      const nextJsPromise = fetch("/api/builds", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ title: prompt.slice(0, 50), prompt }),
-      });
+  // Start the SSE only when submitting
+  startStream(prompt);
 
-      const fastApiPromise = fetch("http://localhost:8000/prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: prompt.slice(0, 50), prompt }),
-      });
+   try {
+    // Save build via API
+    await fetch("/api/builds", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ title: prompt.slice(0, 50), prompt }),
+    });
 
-      await Promise.all([nextJsPromise, fastApiPromise]);
-
-      setSaveMessage("Build generated successfully!");
-      triggerFallingBricks();
-    } catch (err) {
-      setSaveMessage("Build failed.");
-    } finally {
-      setSaving(false);
-      setTimeout(() => setAgentStep("idle"), 500);
-    }
+    setSaveMessage("Build started! Please wait patiently...");
+    triggerFallingBricks();
+  } catch (err) {
+    console.error(err);
+    setSaveMessage("Build failed.");
+    setAgentStep("idle");
+  } finally {
+    setSaving(false);
   }
-
-
+}
 
   function triggerFallingBricks() {
     const host = confettiRef.current;
@@ -266,11 +312,11 @@ export default function ModelPage() {
 
   return (
     <>
-      <LegoLoadingPopup step={agentStep} />
+      <LegoLoadingPopup step={agentStep} message={agentMessage} />
 
       <main className="min-h-screen bg-gradient-to-b from-[#fff5d6] via-[#ffe9a7] to-[#ffd166] text-slate-900">
         <div className="border-b-2 border-[#0ea5e9] bg-[#fef08a] shadow-[0_6px_0_#f59e0b]">
-          <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3 md:px-8">
             <div className="flex items-center gap-2 text-lg font-black text-[#111827]">
               <img src="/rocket.png" alt="Bricked" className="h-8 w-8 drop-shadow-[0_2px_0_#0f2f86]" />
               Bricked
@@ -283,7 +329,7 @@ export default function ModelPage() {
                 My builds
               </button>
               {user?.email && (
-                <span className="rounded-full bg-white   px-3 py-1 font-semibold text-[#1d4ed8] shadow-[0_6px_0_#0f2f86]">
+                <span className="rounded-full bg-white px-3 py-1 font-semibold text-[#1d4ed8] shadow-[0_6px_0_#0f2f86]">
                   {user.email}
                 </span>
               )}
@@ -300,15 +346,15 @@ export default function ModelPage() {
           </div>
         </div>
 
-        <div className="relative mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
+        <div className="relative mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8 md:px-8">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(29,78,216,0.18),transparent_26%),radial-gradient(circle_at_85%_15%,rgba(239,68,68,0.2),transparent_30%),radial-gradient(circle_at_70%_75%,rgba(16,185,129,0.18),transparent_32%)]" />
 
-          <section className="relative overflow-hidden rounded-2xl border-2 border-[#ef4444] bg-white p-4 shadow-[0_10px_0_#b91c1c]">
+          <section className="relative overflow-hidden rounded-2xl border-2 border-[#ef4444] bg-white p-6 shadow-[0_10px_0_#b91c1c]">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_85%_20%,rgba(251,191,36,0.22),transparent_40%)]" />
             <div className="relative space-y-2">
               <p className="text-xs font-black uppercase tracking-[0.12em] text-[#b91c1c]">Inventory</p>
               <h1 className="text-2xl font-black text-[#0f172a]">Upload your Lego collection</h1>
-              <p className="text-slate-700">
+              <p className="text-sm text-slate-700">
                 Drag in a quick snapshot of your pieces to detect parts and keep your build plan aligned with what you own.
               </p>
               <DropZone onFiles={(file) => sendFileToServer(file)} />
@@ -325,11 +371,9 @@ export default function ModelPage() {
                   {message}
                 </p>
               )}
-              <div className="mt-4 rounded-2xl border-2 border-[#16a34a] bg-[#ecfdf3] p-3 shadow-[0_8px_0_#15803d]">
-                <p className="text-xs font-black uppercase tracking-[0.1em] text-[#15803d]">Detected pieces</p>
-                {inventory.length === 0 ? (
-                  <p className="mt-1 text-sm font-semibold text-[#166534]">Upload to see a compact breakdown.</p>
-                ) : (
+              {inventory.length > 0 && (
+                <div className="mt-4 rounded-2xl border-2 border-[#16a34a] bg-[#ecfdf3] p-3 shadow-[0_8px_0_#15803d]">
+                  <p className="text-xs font-black uppercase tracking-[0.1em] text-[#15803d]">Detected pieces</p>
                   <div className="mt-2 grid grid-cols-3 gap-2">
                     {inventory.map((item, idx) => (
                       <div
@@ -345,16 +389,16 @@ export default function ModelPage() {
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </section>
 
-          <section className="relative overflow-hidden rounded-2xl border-2 border-[#0ea5e9] bg-white p-4 shadow-[0_10px_0_#0f2f86]">
+          <section className="relative overflow-hidden rounded-2xl border-2 border-[#0ea5e9] bg-white p-6 shadow-[0_10px_0_#0f2f86]">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_80%_20%,rgba(14,165,233,0.16),transparent_40%)]" />
             <div className="relative space-y-2">
               <p className="text-xs font-black uppercase tracking-[0.12em] text-[#0ea5e9]">Suggestions</p>
-              <h2 className="text-lg font-black text-[#0f172a]">Recommended builds for you</h2>
+              <h2 className="text-xl font-black text-[#0f172a]">Recommended builds for you</h2>
               <p className="text-sm text-[#0f172a]">
                 Personalized from your saved prompts and current pieces.
               </p>
@@ -379,11 +423,11 @@ export default function ModelPage() {
             </div>
           </section>
 
-          <section className="relative overflow-hidden rounded-2xl border-2 border-[#1d4ed8] bg-white p-4 shadow-[0_10px_0_#0f2f86]">
+          <section className="relative overflow-hidden rounded-2xl border-2 border-[#1d4ed8] bg-white p-6 shadow-[0_10px_0_#0f2f86]">
             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(251,191,36,0.18),transparent_45%)]" />
             <div className="relative space-y-3">
               <p className="text-xs font-black uppercase tracking-[0.12em] text-[#1d4ed8]">Blueprint</p>
-              <label className="block text-sm font-semibold text-[#0f172a]">
+              <label className="text-xl font-black text-[#0f172a]">
                 What do you want to build?
                 <textarea
                   className="mt-1 w-full rounded-2xl border-2 border-[#ef4444] bg-[#fff7ed] p-2.5 text-sm text-[#0f172a] outline-none shadow-[0_6px_0_#b91c1c] transition focus:-translate-y-0.5 focus:border-[#1d4ed8] focus:shadow-[0_8px_0_#0f2f86]"
@@ -393,7 +437,7 @@ export default function ModelPage() {
                   onChange={(e) => setPrompt(e.target.value)}
                 />
               </label>
-              <div className="flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2 md:mt-4">
                 <button
                   onClick={saveBuild}
                   disabled={saving}

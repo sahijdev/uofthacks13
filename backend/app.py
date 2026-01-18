@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import cv2
 from PIL import Image
 import io
@@ -9,7 +10,8 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from pydantic import BaseModel
-from agent import call_workflow
+from agent import stream_workflow
+
 
 load_dotenv()
 client = genai.Client()
@@ -19,7 +21,7 @@ DEBUG_SHOW = False  # set True to pop up per-brick crops locally
 brick_recognition_url = "https://api.brickognize.com/predict/parts/"
 
 app = FastAPI()
-test = None
+test = "2x4 brick in red: 40\n2x2 brick in blue: 20\n1x2 plate in yellow: 30\n1x4 brick in green: 10"
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,17 +36,23 @@ class Build(BaseModel):
     title: str
     prompt: str
 
-@app.post("/prompt")
-async def save_build(build: Build):
-    openscad_script = call_workflow(build.prompt, test)
-    print("Started generating")
-    """response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-          contents=
-      'Take the follow OPEN SCAD script and change each brick into the following form: 1) Your OpenSCAD input should be a BRICK DSL. Example supported lines: brick("2x2", xStud=0, yStud=0, zLevel=0, rotY=0, color [0.9,0.1,0.1]); brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]); Supported fields: | kind: "2x2" (first argument) | position: either (xStud,yStud,zLevel) OR (xMm,yMm,zMm) | rotation: rotY=deg OR rot=[rx,ry,rz] | color: color=[r,g,b] (0..1). Only output the final code NOTHING ELSE. Here is the script:' + openscad_script,
-    )"""
-    print(openscad_script)
-    return {"status": "ok", "prompt_received": openscad_script}
+# @app.post("/prompt")
+# async def save_build(build: Build):
+#     script = stream_workflow(build.prompt, test)
+#     # print("Started generating")
+#     # """response = client.models.generate_  content(
+#     #     model="gemini-2.5-flash-lite",
+#     #       contents=
+#     #   'Take the follow OPEN SCAD script and change each brick into the following form: 1) Your OpenSCAD input should be a BRICK DSL. Example supported lines: brick("2x2", xStud=0, yStud=0, zLevel=0, rotY=0, color [0.9,0.1,0.1]); brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]); Supported fields: | kind: "2x2" (first argument) | position: either (xStud,yStud,zLevel) OR (xMm,yMm,zMm) | rotation: rotY=deg OR rot=[rx,ry,rz] | color: color=[r,g,b] (0..1). Only output the final code NOTHING ELSE. Here is the script:' + openscad_script,
+#     # )"""
+#     # print(openscad_script)
+#     return {"status": "ok", "prompt_received": script}
+
+@app.get("/stream_build")
+async def stream_build(prompt: str = Query(...)):
+    pieces = "2x4 red: 40\n2x2 blue: 20"  # replace with real inventory or request
+    return StreamingResponse(stream_workflow(prompt, pieces),
+                             media_type="text/event-stream")
 
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
@@ -52,28 +60,16 @@ async def detect(file: UploadFile = File(...)):
     Detect Lego bricks by color masks, merge overlapping detections,
     and optionally show each crop.
     """
-    MIN_AREA = 400  # filter tiny fragments
-    PAD = 10  # padding around detected bricks
-    COLOR_RANGES = {
-        "red": [(0, 150, 120), (8, 255, 240)],
-        "dark_green": [(30, 80, 80), (75, 255, 255)],
-        "yellow": [(20, 100, 100), (30, 255, 255)],
-        "blue": [(90, 100, 100), (140, 255, 255)],
-        "orange": [(10, 160, 160), (22, 255, 255)],
-        "beige": [(10, 25, 150), (32, 120, 255)],
-        "light_blue": [(85, 50, 150), (110, 200, 255)],
-        "white": [(0, 0, 180), (180, 40, 255)],
-        "black": [(0, 0, 0), (180, 255, 50)],
-    }
     response = client.models.generate_content(
         model="gemini-2.5-flash-lite",
-          contents=[
-        types.Part.from_bytes(
-        data= await file.read(),
-        mime_type='image/jpeg',
-      ),
-      'Give me a list of all the lego peices and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of peices. and make sure to place a newline after each item.'
-    ],
+        contents=[
+            types.Part.from_bytes(
+                data=await file.read(),
+                mime_type="image/jpeg",
+            ),
+            "Give me a list of all the lego peices and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of peices. and make sure to place a newline after each item.",
+        ],
+        config=types.GenerateContentConfig(temperature=0),
     )
     print(response.text)
     test = response.text
