@@ -21,7 +21,7 @@ DEBUG_SHOW = False  # set True to pop up per-brick crops locally
 brick_recognition_url = "https://api.brickognize.com/predict/parts/"
 
 app = FastAPI()
-test = "2x4 brick in red: 40\n2x2 brick in blue: 20\n1x2 plate in yellow: 30\n1x4 brick in green: 10"
+thing = "every piece"
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +35,13 @@ app.add_middleware(
 class Build(BaseModel):
     title: str
     prompt: str
+
+class SuggestionsRequest(BaseModel):
+    prompts: list[str] = []
+    inventory: list[str] = []
+
+class PersonaRequest(BaseModel):
+    prompts: list[str] = []
 
 # @app.post("/prompt")
 # async def save_build(build: Build):
@@ -54,12 +61,14 @@ def test():
 
 @app.get("/stream_build")
 async def stream_build(prompt: str = Query(...)):
-    pieces = "2x4 red: 40\n2x2 blue: 20"  # replace with real inventory or request
+    pieces = thing
     return StreamingResponse(stream_workflow(prompt, pieces),
                              media_type="text/event-stream")
 
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
+    global thing
+
     """
     Detect Lego bricks by color masks, merge overlapping detections,
     and optionally show each crop.
@@ -72,11 +81,11 @@ async def detect(file: UploadFile = File(...)):
                 data=await file.read(),
                 mime_type="image/jpeg",
             ),
-            "Give me a list of all the lego pieces and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of pieces, start off each line with the colour of the block, followed by the brick type, followed by a colon, followed by a space, and finally the number of bricks. and make sure to place a newline after each item. Do not go past 100 different blocks",
+            "Give me a list of all the lego pieces and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of pieces, start off each line with the colour of the block, followed by the brick type, followed by a colon, followed by a space, and finally the number of bricks. and make sure to place a newline after each item. Do not go past 100 different blocks. Each block must be categorized into the following types: 1x1, 1x2, 1x3, 1x4, 1x6, 1x8, 2x2, 2x3, 2x4, 2x6, 2x8, 2x10, 3x3, 4x4, plate_1x2, plate_1x4, plate_2x2, plate_2x4, plate_2x6, tile_1x2, tile_1x4, tile_2x2, tile_2x4, slope_45_2x2, slope_45_2x4",
         ]
     )
     print(response.text)
-    test = response.text
+    thing = response.text
 
     """
     contents = await file.read()
@@ -132,7 +141,7 @@ async def detect(file: UploadFile = File(...)):
             )
 
     # Merge overlapping detections per color
-    def merge_bricks(bricks_list, iou_threshold=0.2):
+def merge_bricks(bricks_list, iou_threshold=0.2):
         merged = []
         by_color = {}
         for b in bricks_list:
@@ -203,3 +212,78 @@ async def detect(file: UploadFile = File(...)):
     print(brick_list)
     """
     return {"bricks": response.text}
+
+@app.post("/persona")
+async def persona(req: PersonaRequest):
+    """
+    Cluster a user into one of five personas based on past prompts.
+    """
+    examples = "\n".join(f"- {p}" for p in req.prompts[:20]) or "None provided"
+    prompt_text = f"""
+You are a LEGO build style classifier. Based ONLY on the user's past prompts, pick exactly one persona key from this list:
+- cosmic (space, sci-fi, rockets, futuristic vehicles)
+- mech (robots, mechs, machines, battle builds)
+- architect (buildings, bridges, monuments, clean structures)
+- eco (nature, animals, biomes, cozy organic builds)
+- whimsy (playful, characters, fantasy creatures, quirky toys)
+
+User prompts (latest first):
+{examples}
+
+Return ONLY the persona key exactly as written: cosmic, mech, architect, eco, or whimsy. No punctuation or extra words.
+"""
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=[prompt_text],
+        )
+        raw = (response.text or "").strip().lower()
+        for key in ["cosmic", "mech", "architect", "eco", "whimsy"]:
+            if key in raw:
+                return {"persona": key}
+        raise ValueError(f"unrecognized persona: {raw}")
+    except Exception as e:
+        print(f"persona error: {e}")
+        return {"persona": "whimsy"}
+
+@app.post("/suggestions")
+async def suggestions(req: SuggestionsRequest):
+    """
+    Generate recommended builds based on past prompts and current inventory.
+    """
+    past_prompts = "\n".join(f"- {p}" for p in req.prompts[:12]) or "None provided"
+    pieces = "\n".join(f"- {p}" for p in req.inventory[:12]) or "Not detected yet"
+
+    prompt_text = f"""
+You are a playful LEGO concept artist. Propose 3-5 punchy build ideas (max 120 chars each).
+- Past prompts (influence style/themes):
+{past_prompts}
+- Inventory highlights (keep ideas feasible):
+{pieces}
+Format: bullet points only. Keep them vivid, doable with few pieces, and varied (vehicle, creature, architecture, etc.).
+"""
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=[prompt_text],
+        )
+        raw = response.text or ""
+        ideas = [
+            line.lstrip("-*• ").strip()
+            for line in raw.splitlines()
+            if line.strip()
+        ]
+        ideas = [idea for idea in ideas if idea][:6]
+        if not ideas:
+            raise ValueError("Empty ideas")
+        return {"recommendations": ideas}
+    except Exception as e:
+        print(f"suggestions error: {e}")
+        fallback = [
+            "Compact hovercraft with a single highlight color stripe",
+            "Palm-sized mech with chunky arms and antenna eyes",
+            "Tiny lighthouse on a rock outcrop with a spinning top",
+            "Micro cargo rover with detachable trailer",
+            "Desk buddy robot holding a flag made from plates",
+        ]
+        return {"recommendations": fallback}

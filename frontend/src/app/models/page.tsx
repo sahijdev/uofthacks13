@@ -2,8 +2,49 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../context/AuthContext";
+import { classifyPersonaLocal, PersonaKey } from "../lib/persona";
 
 type Build = { id: number; title: string; prompt: string; created_at: string };
+
+type PersonaInfo = { title: string; mascot: string; blurb: string; color: string; accent: string };
+
+const PERSONAS: Record<PersonaKey, PersonaInfo> = {
+  cosmic: {
+    title: "Cosmic Voyager",
+    mascot: "Orbit Otter",
+    blurb: "You gravitate toward rockets, starships, and sleek sci-fi silhouettes.",
+    color: "#0ea5e9",
+    accent: "#0f2f86",
+  },
+  mech: {
+    title: "Mech Tinkerer",
+    mascot: "Gear Gecko",
+    blurb: "You love articulated bots, chunky walkers, and machine guts on display.",
+    color: "#ef4444",
+    accent: "#991b1b",
+  },
+  architect: {
+    title: "Brickwright Architect",
+    mascot: "Draft Owl",
+    blurb: "You chase clean lines—bridges, towers, pavilions—precision over chaos.",
+    color: "#1d4ed8",
+    accent: "#0f2f86",
+  },
+  eco: {
+    title: "Eco Dreamer",
+    mascot: "Sprout Turtle",
+    blurb: "You build cozy biomes: treehouses, critters, garden scenes and calm vibes.",
+    color: "#22c55e",
+    accent: "#15803d",
+  },
+  whimsy: {
+    title: "Whimsy Inventor",
+    mascot: "Pixel Fox",
+    blurb: "You thrive on playful characters, odd gadgets, and colorful mashups.",
+    color: "#f59e0b",
+    accent: "#b45309",
+  },
+};
 
 export default function ModelsHistoryPage() {
   const { isAuthenticated, initializing, token, user, logout } = useAuth();
@@ -12,6 +53,9 @@ export default function ModelsHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [persona, setPersona] = useState<PersonaKey | null>(null);
+  const [personaLoading, setPersonaLoading] = useState(false);
+  const [personaError, setPersonaError] = useState("");
 
   useEffect(() => {
     if (!initializing && !isAuthenticated) router.replace("/");
@@ -40,6 +84,17 @@ export default function ModelsHistoryPage() {
     }
     loadBuilds();
   }, [token]);
+
+  useEffect(() => {
+    if (!builds.length) {
+      setPersona(null);
+      return;
+    }
+    setPersonaError("");
+    setPersonaLoading(false);
+    const localGuess = classifyPersonaLocal(builds.map((b) => b.prompt).slice(0, 25));
+    setPersona(localGuess);
+  }, [builds]);
 
   async function deleteBuild(id: number) {
     if (!token) return;
@@ -99,6 +154,30 @@ export default function ModelsHistoryPage() {
 
       <div className="relative mx-auto flex max-w-6xl flex-col gap-6 px-6 py-10">
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(29,78,216,0.18),transparent_26%),radial-gradient(circle_at_85%_15%,rgba(239,68,68,0.2),transparent_30%),radial-gradient(circle_at_70%_75%,rgba(16,185,129,0.18),transparent_32%)]" />
+
+        {persona && (
+          <section className="relative overflow-hidden rounded-3xl border-4 border-[#1d4ed8] bg-white p-6 shadow-[0_16px_0_#0f2f86]">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(14,165,233,0.18),transparent_42%)]" />
+            <div className="relative flex flex-wrap items-center gap-4">
+              <div
+                className="grid h-16 w-16 place-items-center rounded-2xl border-2 text-lg font-black uppercase text-white shadow-[0_8px_0_rgba(0,0,0,0.15)]"
+                style={{ backgroundColor: PERSONAS[persona].color, borderColor: PERSONAS[persona].accent }}
+              >
+                {PERSONAS[persona].mascot.split(" ").map((w) => w[0]).join("")}
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-[#1d4ed8]">
+                  Your build persona {personaLoading ? "(classifying…)" : ""}
+                </p>
+                <h2 className="text-xl font-black text-[#0f172a]">
+                  {PERSONAS[persona].title} — {PERSONAS[persona].mascot}
+                </h2>
+                <p className="text-sm font-semibold text-[#0f172a]">{PERSONAS[persona].blurb}</p>
+                {personaError && <p className="text-xs font-semibold text-[#b91c1c]">{personaError}</p>}
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="relative overflow-hidden rounded-3xl border-4 border-[#1d4ed8] bg-white p-8 shadow-[0_16px_0_#0f2f86]">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(251,191,36,0.22),transparent_42%)]" />

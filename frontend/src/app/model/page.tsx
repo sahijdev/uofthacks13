@@ -101,6 +101,25 @@ function buildIdentity(builds: Build[]): string | null {
   return `You lean toward ${top.join(", ")} builds`;
 }
 
+function buildFallbackRecommendations(inventory: InventoryItem[], builds: Build[]) {
+  const persona = buildIdentity(builds);
+  const topPieces = [...inventory]
+    .map((i) => ({ ...i, score: Number.isFinite(i.count) ? i.count! : 1 }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((i) => i.name);
+
+  return [
+    topPieces.length
+      ? `Mini build using your abundant ${topPieces.join(", ")} pieces — think a micro vehicle or bot.`
+      : "Quick micro build using your common plates and bricks.",
+    persona
+      ? `${persona} vibe: try a variant inspired by your past prompts, but smaller so it fits current pieces.`
+      : "Try a fresh themed build (spaceship, cottage, or mech) sized for your current stash.",
+    "Remix an older prompt with fewer studs: shrink dimensions and focus on a standout detail.",
+  ];
+}
+
 function useAgentStream(
   onStep: (step: AgentStep, message: string) => void,
   onFinalScript?: (script: string) => void,
@@ -159,6 +178,7 @@ export default function ModelPage() {
   const loadingInterval = useRef<NodeJS.Timeout | null>(null);
   const [builds, setBuilds] = useState<Build[]>([]);
   const [recommendations, setRecommendations] = useState<string[]>([]);
+  const [loadingRecs, setLoadingRecs] = useState(false);
   const confettiRef = useRef<HTMLDivElement | null>(null);
   const [agentStep, setAgentStep] = useState<AgentStep>("idle");
   const [agentMessage, setAgentMessage] = useState<string>("");
@@ -184,29 +204,39 @@ export default function ModelPage() {
     })();
   }, [token]);
 
+  // Only refresh suggestions after inventory updates (even if builds change).
   useEffect(() => {
-    if (inventory.length === 0 && builds.length === 0) {
+    if (inventory.length === 0) {
       setRecommendations([]);
       return;
     }
-    const persona = buildIdentity(builds);
-    const topPieces = [...inventory]
-      .map((i) => ({ ...i, score: Number.isFinite(i.count) ? i.count! : 1 }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
-      .map((i) => i.name);
+    const controller = new AbortController();
+    const payload = {
+      prompts: builds.map((b) => b.prompt).slice(0, 20),
+      inventory: inventory.map((i) => `${i.name}: ${i.count ?? i.rawCount}`).slice(0, 20),
+    };
 
-    const ideas = [
-      topPieces.length
-        ? `Mini build using your abundant ${topPieces.join(", ")} pieces — think a micro vehicle or bot.`
-        : "Quick micro build using your common plates and bricks.",
-      persona
-        ? `${persona} vibe: try a variant inspired by your past prompts, but smaller so it fits current pieces.`
-        : "Try a fresh themed build (spaceship, cottage, or mech) sized for your current stash.",
-      "Remix an older prompt with fewer studs: shrink dimensions and focus on a standout detail.",
-    ];
-    setRecommendations(ideas);
-  }, [inventory, builds]);
+    setLoadingRecs(true);
+    fetch("http://localhost:8000/suggestions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`suggestions ${res.status}`);
+        const data = await res.json();
+        const ideas = Array.isArray(data?.recommendations) ? data.recommendations : [];
+        setRecommendations(ideas.length ? ideas : buildFallbackRecommendations(inventory, builds));
+      })
+      .catch((err) => {
+        console.error("suggestions failed", err);
+        setRecommendations(buildFallbackRecommendations(inventory, builds));
+      })
+      .finally(() => setLoadingRecs(false));
+
+    return () => controller.abort();
+  }, [inventory]);
 
   useEffect(() => {
     if (!initializing && !isAuthenticated) {
@@ -400,19 +430,24 @@ async function saveBuild() {
               <p className="text-xs font-black uppercase tracking-[0.12em] text-[#0ea5e9]">Suggestions</p>
               <h2 className="text-xl font-black text-[#0f172a]">Recommended builds for you</h2>
               <p className="text-sm text-[#0f172a]">
-                Personalized from your saved prompts and current pieces.
+                Personalized from your saved prompts and current pieces. Left-click a card to drop it into your prompt box.
               </p>
+              {loadingRecs && (
+                <p className="text-xs font-semibold text-[#1d4ed8]">Asking Gemini for ideas…</p>
+              )}
               <div className="grid gap-2 sm:grid-cols-2">
                 {recommendations.map((rec, idx) => (
-                  <div
+                  <button
                     key={idx}
-                    className="rounded-xl border-2 border-[#0ea5e9] bg-[#e0f2fe] p-3 text-sm font-semibold text-[#0f172a] shadow-[0_8px_0_#0f2f86]"
+                    type="button"
+                    onClick={() => setPrompt(rec)}
+                    className="cursor-pointer rounded-xl border-2 border-[#0ea5e9] bg-[#e0f2fe] p-3 text-left text-sm font-semibold text-[#0f172a] shadow-[0_8px_0_#0f2f86] transition hover:-translate-y-0.5 hover:shadow-[0_10px_0_#0f2f86] focus:outline-none focus:ring-2 focus:ring-[#0ea5e9]"
                   >
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 rounded-full bg-[#ef4444] shadow-[0_0_0_3px_#0f2f86]" />
                       <span className="text-[#0f172a]">{rec}</span>
                     </div>
-                  </div>
+                  </button>
                 ))}
                 {recommendations.length === 0 && (
                   <div className="rounded-xl border-2 border-dashed border-[#0ea5e9] bg-[#f8fafc] p-3 text-sm font-semibold text-[#0f172a] shadow-[0_8px_0_#0f2f86]">
