@@ -36,8 +36,10 @@ export default function DropZone({ onFiles }: Props) {
 
   return (
     <div
-      className={`flex w-full max-w-xl flex-col items-center gap-3 rounded-2xl border border-dashed p-6 text-center transition ${
-        hover ? "border-blue-500 bg-blue-50/60" : "border-zinc-300 bg-white"
+      className={`flex w-full max-w-xl flex-col items-center gap-3 rounded-2xl border-4 border-dashed p-6 text-center transition ${
+        hover
+          ? "border-[#ef4444] bg-[#ffe4e6] shadow-[0_12px_0_#b91c1c]"
+          : "border-[#1d4ed8] bg-[#e0f2fe] shadow-[0_12px_0_#0f2f86]"
       }`}
       onDragOver={(e) => {
         e.preventDefault();
@@ -61,11 +63,12 @@ export default function DropZone({ onFiles }: Props) {
         hidden
         onChange={(e) => handleFiles(e.target.files)}
       />
-      <p className="text-sm text-zinc-600">Drag & drop an image of your Lego inventory here!</p>
-      {error && <p className="text-xs text-red-500">{error}</p>}
+      <p className="text-sm font-semibold text-[#0f172a]">Drag & drop an image of your Lego inventory here.</p>
+      <p className="text-xs font-medium text-[#0f172a]/70">We&apos;ll scan it to understand what pieces you own.</p>
+      {error && <p className="text-xs font-semibold text-[#b91c1c]">{error}</p>}
       {preview && (
         <div className="flex w-full justify-center">
-          <img src={preview} alt="Preview" className="h-40 w-auto rounded object-contain" />
+          <img src={preview} alt="Preview" className="h-40 w-auto rounded border-2 border-[#0ea5e9] shadow-[0_8px_0_#0f2f86] object-contain" />
         </div>
       )}
     </div>

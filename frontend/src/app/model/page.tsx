@@ -1,79 +1,369 @@
 "use client";
-import { useEffect, useRef } from "react";
-import {
-  AmbientLight,
-  BoxGeometry,
-  Color,
-  DirectionalLight,
-  Mesh,
-  MeshStandardMaterial,
-  PerspectiveCamera,
-  Scene,
-  WebGLRenderer,
-} from "three";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import DropZone from "../DropZone";
+import { useAuth } from "../context/AuthContext";
+import { Bouncy } from "ldrs/react";
+import 'ldrs/react/Bouncy.css'
+
+type InventoryItem = { name: string; count?: number; rawCount: string };
+type Build = { id: number; title: string; prompt: string; created_at: string };
+
+function parseInventory(raw: string): InventoryItem[] {
+  if (!raw) return [];
+  return raw
+    .split("*")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((segment) => {
+      const [namePart, countPart = ""] = segment.split(":");
+      const name = namePart?.trim() || "Unknown piece";
+      const count = countPart.match(/\d+/)?.[0];
+      return { name, count: count ? Number(count) : undefined, rawCount: countPart.trim() || "?" };
+    });
+}
+
+const LOADING_PHRASES = [
+  "Building bricks…",
+  "Snapping studs…",
+  "Sorting colors…",
+  "Counting plates…",
+  "Stacking beams…",
+];
+
+function buildIdentity(builds: Build[]): string | null {
+  if (!builds.length) return null;
+  const text = builds.map((b) => `${b.title} ${b.prompt}`.toLowerCase()).join(" ");
+  const tokens = text.match(/[a-z]{3,}/g) || [];
+  const freq: Record<string, number> = {};
+  tokens.forEach((t) => {
+    freq[t] = (freq[t] || 0) + 1;
+  });
+  const top = Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([w]) => w);
+  if (!top.length) return null;
+  return `You lean toward ${top.join(", ")} builds`;
+}
 
 export default function ModelPage() {
-  const mountRef = useRef<HTMLDivElement | null>(null);
+  const { isAuthenticated, initializing, user, logout, token } = useAuth();
+  const router = useRouter();
+  const url = "http://localhost:8000/detect";
+  const [prompt, setPrompt] = useState("");
+  const [status, setStatus] = useState<"idle" | "uploading" | "error" | "done">("idle");
+  const [message, setMessage] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const loadingInterval = useRef<NodeJS.Timeout | null>(null);
+  const [builds, setBuilds] = useState<Build[]>([]);
+  const [recommendations, setRecommendations] = useState<string[]>([]);
+  const confettiRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const mountEl = mountRef.current;
-    if (!mountEl) return;
+    if (!token) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/builds", { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) return;
+        const data = await res.json();
+        setBuilds(data.builds || []);
+      } catch (err) {
+        console.error("load builds failed", err);
+      }
+    })();
+  }, [token]);
 
-    const scene = new Scene();
-    scene.background = new Color("#0f172a");
+  useEffect(() => {
+    if (inventory.length === 0 && builds.length === 0) {
+      setRecommendations([]);
+      return;
+    }
+    const persona = buildIdentity(builds);
+    const topPieces = [...inventory]
+      .map((i) => ({ ...i, score: Number.isFinite(i.count) ? i.count! : 1 }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((i) => i.name);
 
-    const camera = new PerspectiveCamera(75, 1, 0.1, 1000);
-    camera.position.z = 3;
+    const ideas = [
+      topPieces.length
+        ? `Mini build using your abundant ${topPieces.join(", ")} pieces — think a micro vehicle or bot.`
+        : "Quick micro build using your common plates and bricks.",
+      persona
+        ? `${persona} vibe: try a variant inspired by your past prompts, but smaller so it fits current pieces.`
+        : "Try a fresh themed build (spaceship, cottage, or mech) sized for your current stash.",
+      "Remix an older prompt with fewer studs: shrink dimensions and focus on a standout detail.",
+    ];
+    setRecommendations(ideas);
+  }, [inventory, builds]);
 
-    const renderer = new WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    mountEl.appendChild(renderer.domElement);
+  useEffect(() => {
+    if (!initializing && !isAuthenticated) {
+      router.replace("/");
+    }
+  }, [initializing, isAuthenticated, router]);
 
-    const cube = new Mesh(
-      new BoxGeometry(),
-      new MeshStandardMaterial({ color: "#38bdf8", metalness: 0.1, roughness: 0.7 })
-    );
-    scene.add(cube);
+  async function sendFileToServer(file: File) {
+    try {
+      setStatus("uploading");
+      setMessage(LOADING_PHRASES[0]);
+      if (loadingInterval.current) clearInterval(loadingInterval.current);
+      let i = 0;
+      loadingInterval.current = setInterval(() => {
+        i = (i + 1) % LOADING_PHRASES.length;
+        setMessage(LOADING_PHRASES[i]);
+      }, 1100);
 
-    const ambient = new AmbientLight("#ffffff", 0.6);
-    const directional = new DirectionalLight("#ffffff", 0.8);
-    directional.position.set(2, 2, 3);
-    scene.add(ambient, directional);
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch(url, {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}`);
+      }
+      const data = await response.json();
+      setInventory(parseInventory(data?.bricks ?? ""));
+      setStatus("done");
+      setMessage("Upload complete. Parsed your inventory below.");
+    } catch (err) {
+      console.error(err);
+      setStatus("error");
+      setMessage("Upload failed. Check backend and CORS.");
+    } finally {
+      if (loadingInterval.current) {
+        clearInterval(loadingInterval.current);
+        loadingInterval.current = null;
+      }
+    }
+  }
 
-    const resize = () => {
-      const size = Math.min(window.innerWidth - 48, 520);
-      renderer.setSize(size, size);
-      camera.aspect = 1;
-      camera.updateProjectionMatrix();
-    };
-    resize();
-    window.addEventListener("resize", resize);
+  async function saveBuild() {
+    setSaveMessage("");
+    if (!prompt.trim()) {
+      setSaveMessage("Add a prompt first so we know what to save.");
+      return;
+    }
+    setSaving(true);
 
-    let animationFrame: number;
-    const animate = () => {
-      cube.rotation.x += 0.01;
-      cube.rotation.y += 0.01;
-      renderer.render(scene, camera);
-      animationFrame = requestAnimationFrame(animate);
-    };
-    animate();
+    try {
+      // 1️⃣ Call Next.js API route
+      const nextJsPromise = fetch("/api/builds", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ title: prompt.slice(0, 50) || "Untitled build", prompt }),
+      });
 
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      window.removeEventListener("resize", resize);
-      mountEl.removeChild(renderer.domElement);
-      renderer.dispose();
-      cube.geometry.dispose();
-      (cube.material as MeshStandardMaterial).dispose();
-    };
-  }, []);
+      // 2️⃣ Call FastAPI backend
+      const fastApiPromise = fetch("http://localhost:8000/prompt", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`, // optional
+        },
+        body: JSON.stringify({ title: prompt.slice(0, 50) || "Untitled build", prompt }),
+      });
+
+      // Run both in parallel
+      const [nextJsRes, fastApiRes] = await Promise.all([nextJsPromise, fastApiPromise]);
+
+      if (!nextJsRes.ok) {
+        const data = await nextJsRes.json().catch(() => ({}));
+        throw new Error(data?.message || "Next.js API failed.");
+      }
+      if (!fastApiRes.ok) {
+        const data = await fastApiRes.json().catch(() => ({}));
+        throw new Error(data?.message || "FastAPI failed.");
+      }
+
+      setSaveMessage("Saved to both Next.js and FastAPI!");
+      triggerFallingBricks();
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : "Could not save build.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+
+  function triggerFallingBricks() {
+    const host = confettiRef.current;
+    if (!host) return;
+    host.innerHTML = "";
+    const colors = ["#ef4444", "#f97316", "#22c55e", "#3b82f6", "#a855f7", "#facc15"];
+    Array.from({ length: 12 }).forEach((_, idx) => {
+      const div = document.createElement("div");
+      const size = 10 + Math.random() * 8;
+      div.className = "lego-confetti";
+      div.style.setProperty("--x", `${5 + Math.random() * 90}%`);
+      div.style.setProperty("--delay", `${Math.random() * 0.25}s`);
+      div.style.setProperty("--duration", `${1.1 + Math.random() * 0.7}s`);
+      div.style.setProperty("--w", `${size}px`);
+      div.style.setProperty("--h", `${size * 0.6}px`);
+      div.style.backgroundColor = colors[idx % colors.length];
+      host.appendChild(div);
+      div.addEventListener("animationend", () => div.remove());
+    });
+  }
+
+  if (!isAuthenticated && !initializing) return null;
 
   return (
-    <main className="min-h-screen bg-slate-900 p-10 text-white">
-      <h1 className="text-3xl font-semibold mb-6">Model workspace</h1>
-      <div className="flex flex-col items-center gap-6">
-        <div ref={mountRef} className="flex items-center justify-center rounded-2xl border border-slate-700 bg-slate-800/60 p-4 shadow-lg" />
-        {/* Drop zone and UI go here */}
+    <main className="min-h-screen bg-gradient-to-b from-[#fff5d6] via-[#ffe9a7] to-[#ffd166] text-slate-900">
+      <div className="border-b-2 border-[#0ea5e9] bg-[#fef08a] shadow-[0_6px_0_#f59e0b]">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3 text-lg font-black text-[#111827]">
+            <img src="/rocket.png" alt="Bricked" className="h-8 w-8 drop-shadow-[0_2px_0_#0f2f86]" />
+            Bricked
+          </div>
+          <div className="flex items-center gap-4 text-sm text-[#0f172a]">
+            <button
+              onClick={() => router.push("/models")}
+              className="rounded-full border-2 border-[#ef4444] bg-white px-3 py-1 font-semibold text-[#b91c1c] shadow-[0_6px_0_#b91c1c33] transition hover:-translate-y-0.5 hover:shadow-[0_8px_0_#b91c1c55]"
+            >
+              My builds
+            </button>
+            {user?.email && (
+              <span className="rounded-full bg-white px-3 py-1 font-semibold text-[#1d4ed8] shadow-[0_6px_0_#0f2f86]">
+                {user.email}
+              </span>
+            )}
+            <button
+              onClick={() => {
+                logout();
+                router.replace("/");
+              }}
+              className="rounded-full border-2 border-[#1d4ed8] bg-[#e0e7ff] px-3 py-1 font-semibold text-[#0f172a] shadow-[0_6px_0_#0f2f86] transition hover:-translate-y-0.5 hover:border-[#ef4444] hover:shadow-[0_8px_0_#b91c1c]"
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="relative mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(29,78,216,0.18),transparent_26%),radial-gradient(circle_at_85%_15%,rgba(239,68,68,0.2),transparent_30%),radial-gradient(circle_at_70%_75%,rgba(16,185,129,0.18),transparent_32%)]" />
+
+        <section className="relative overflow-hidden rounded-2xl border-2 border-[#ef4444] bg-white p-4 shadow-[0_10px_0_#b91c1c]">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_85%_20%,rgba(251,191,36,0.22),transparent_40%)]" />
+          <div className="relative space-y-2">
+            <p className="text-xs font-black uppercase tracking-[0.12em] text-[#b91c1c]">Inventory</p>
+            <h1 className="text-2xl font-black text-[#0f172a]">Upload your Lego collection</h1>
+            <p className="text-slate-700">
+              Drag in a quick snapshot of your pieces to detect parts and keep your build plan aligned with what you own.
+            </p>
+            <DropZone onFiles={(file) => sendFileToServer(file)} />
+            {status !== "idle" && (
+              <p
+                className={
+                  status === "error"
+                    ? "mt-4 text-sm font-semibold text-[#b91c1c]"
+                    : status === "uploading"
+                      ? "mt-4 text-sm font-semibold text-[#1d4ed8]"
+                      : "mt-4 text-sm font-semibold text-[#15803d]"
+                }
+              >
+                {message}
+              </p>
+            )}
+            <div className="mt-4 rounded-2xl border-2 border-[#16a34a] bg-[#ecfdf3] p-3 shadow-[0_8px_0_#15803d]">
+              <p className="text-xs font-black uppercase tracking-[0.1em] text-[#15803d]">Detected pieces</p>
+              {inventory.length === 0 ? (
+                <p className="mt-1 text-sm font-semibold text-[#166534]">Upload to see a compact breakdown.</p>
+              ) : (
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {inventory.map((item, idx) => (
+                    <div
+                      key={`${item.name}-${idx}`}
+                      className="rounded-lg border border-[#16a34a] bg-white px-2.5 py-2 text-xs font-semibold text-[#166534] shadow-[0_4px_0_#15803d]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[#14532d] line-clamp-2">{item.name}</span>
+                        <span className="rounded-full bg-[#ecfdf3] px-2 py-0.5 text-[11px] font-black uppercase text-[#166534] shadow-[0_3px_0_#15803d]">
+                          {item.count ?? item.rawCount}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="relative overflow-hidden rounded-2xl border-2 border-[#0ea5e9] bg-white p-4 shadow-[0_10px_0_#0f2f86]">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_80%_20%,rgba(14,165,233,0.16),transparent_40%)]" />
+          <div className="relative space-y-2">
+            <p className="text-xs font-black uppercase tracking-[0.12em] text-[#0ea5e9]">Suggestions</p>
+            <h2 className="text-lg font-black text-[#0f172a]">Recommended builds for you</h2>
+            <p className="text-sm text-[#0f172a]">
+              Personalized from your saved prompts and current pieces.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {recommendations.map((rec, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-xl border-2 border-[#0ea5e9] bg-[#e0f2fe] p-3 text-sm font-semibold text-[#0f172a] shadow-[0_8px_0_#0f2f86]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-[#ef4444] shadow-[0_0_0_3px_#0f2f86]" />
+                    <span className="text-[#0f172a]">{rec}</span>
+                  </div>
+                </div>
+              ))}
+              {recommendations.length === 0 && (
+                <div className="rounded-xl border-2 border-dashed border-[#0ea5e9] bg-[#f8fafc] p-3 text-sm font-semibold text-[#0f172a] shadow-[0_8px_0_#0f2f86]">
+                  Save a prompt and upload inventory to see personalized ideas.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="relative overflow-hidden rounded-2xl border-2 border-[#1d4ed8] bg-white p-4 shadow-[0_10px_0_#0f2f86]">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(251,191,36,0.18),transparent_45%)]" />
+          <div className="relative space-y-3">
+            <p className="text-xs font-black uppercase tracking-[0.12em] text-[#1d4ed8]">Blueprint</p>
+            <label className="block text-sm font-semibold text-[#0f172a]">
+              What do you want to build?
+              <textarea
+                className="mt-1 w-full rounded-2xl border-2 border-[#ef4444] bg-[#fff7ed] p-2.5 text-sm text-[#0f172a] outline-none shadow-[0_6px_0_#b91c1c] transition focus:-translate-y-0.5 focus:border-[#1d4ed8] focus:shadow-[0_8px_0_#0f2f86]"
+                rows={3}
+                placeholder="Small spaceship, bridge, house..."
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={saveBuild}
+                disabled={saving}
+                className="relative rounded-xl bg-[#fbbf24] px-4 py-2 text-xs font-black uppercase tracking-wide text-[#92400e] shadow-[0_8px_0_#d97706] transition hover:-translate-y-0.5 hover:shadow-[0_10px_0_#b45309] disabled:opacity-60"
+              >
+                <span className="pointer-events-none absolute -top-1 left-1.5 flex gap-1">
+                  <span className="h-2 w-3 rounded-full bg-[#ffe08a] shadow-[0_2px_0_#d97706]" />
+                  <span className="h-2 w-3 rounded-full bg-[#ffe08a] shadow-[0_2px_0_#d97706]" />
+                </span>
+                {saving ? "Generating" : "Submit prompt"} {saving && <Bouncy size={12}/>}
+              </button>
+              <button
+                onClick={() => setPrompt("")}
+                className="rounded-xl border-2 border-[#1d4ed8] bg-[#e0e7ff] px-3 py-2 text-xs font-semibold text-[#0f172a] shadow-[0_6px_0_#0f2f86] transition hover:-translate-y-0.5 hover:border-[#ef4444] hover:shadow-[0_8px_0_#b91c1c]"
+              >
+                Clear
+              </button>
+            </div>
+            {saveMessage && <p className="text-sm font-semibold text-[#0f172a]">{saveMessage}</p>}
+            <div ref={confettiRef} className="pointer-events-none absolute inset-0 overflow-hidden" />
+          </div>
+        </section>
       </div>
     </main>
   );

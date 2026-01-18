@@ -1,8 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fff5d6;
+  --foreground: #0f172a;
+  --surface: #fef3c7;
+  --muted: #475569;
+  --accent: #ef4444; /* brick red */
+  --accent-strong: #1d4ed8; /* stud blue */
+  --accent-yellow: #fbbf24;
 }
 
 @theme inline {
@@ -12,15 +17,57 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(circle at 15% 20%, rgba(251, 191, 36, 0.3), transparent 22%),
+    radial-gradient(circle at 75% 15%, rgba(29, 78, 216, 0.22), transparent 24%),
+    repeating-linear-gradient(45deg, rgba(239, 68, 68, 0.08), rgba(239, 68, 68, 0.08) 12px, transparent 12px, transparent 24px),
+    var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+::selection {
+  background: rgba(29, 78, 216, 0.25);
+  color: #0f172a;
+}
+
+.lego-confetti {
+  position: absolute;
+  left: var(--x, 0);
+  top: -16px;
+  width: var(--w, 12px);
+  height: var(--h, 8px);
+  transform: translateX(-50%) rotate(6deg);
+  border-radius: 3px;
+  background-image:
+    radial-gradient(circle at 28% 28%, rgba(255, 255, 255, 0.6), transparent 60%),
+    radial-gradient(circle at 72% 28%, rgba(255, 255, 255, 0.6), transparent 60%),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.12));
+  box-shadow:
+    0 -3px 0 rgba(0, 0, 0, 0.08) inset,
+    0 3px 0 rgba(255, 255, 255, 0.2) inset;
+  animation: brick-fall var(--duration, 1.5s) cubic-bezier(0.15, 0.6, 0.4, 1) var(--delay, 0s) forwards;
+}
+
+@keyframes brick-fall {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px) rotate(-10deg);
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(240px) rotate(24deg);
+  }
 }
