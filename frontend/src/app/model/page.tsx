@@ -149,7 +149,7 @@ function useAgentStream(
 export default function ModelPage() {
   const { isAuthenticated, initializing, user, logout, token } = useAuth();
   const router = useRouter();
-  const url = "http://localhost:8000/detect";
+  const url = "http://0.0.0.0:8000/detect";
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<"idle" | "uploading" | "error" | "done">("idle");
   const [message, setMessage] = useState<string>("");

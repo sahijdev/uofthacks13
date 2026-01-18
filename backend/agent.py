@@ -135,13 +135,13 @@ ONLY output valid DSL lines.
 ============================================================
 BRICK DSL FORMAT (REQUIRED):
 
-brick("2x2", xStud=0, yStud=0, zLevel=0, rot=[0,90,0], color=[0.9,0.1,0.1]);
-brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]);
+brick("2x2", xStud=0, yStud=0, zLevel=0, rot=[270,0,0], color=[0.9,0.1,0.1]);
+brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[270,0,0], color=[1,1,0]);
 
 Supported fields:
 - kind: first argument (e.g. "2x2")
 - position: either (xStud, yStud, zLevel) OR (xMm, yMm, zMm)
-- rotation: rot=[0,90,0] ALWAYS
+- rotation: rot=[270,0,0] ALWAYS
 - color: color=[r,g,b] (0..1)
 ============================================================
 
@@ -187,7 +187,7 @@ def route_evaluator(state: State):
 
 load_dotenv()
 llm = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct")
-llm_reasoning = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct")
+llm_reasoning = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
 evaluator = llm.with_structured_output(Feedback)
 
 state_graph = StateGraph(State)

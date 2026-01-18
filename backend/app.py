@@ -48,6 +48,10 @@ class Build(BaseModel):
 #     # print(openscad_script)
 #     return {"status": "ok", "prompt_received": script}
 
+@app.get("/test")
+def test():
+    return "TEST"
+
 @app.get("/stream_build")
 async def stream_build(prompt: str = Query(...)):
     pieces = "2x4 red: 40\n2x2 blue: 20"  # replace with real inventory or request
@@ -62,14 +66,14 @@ async def detect(file: UploadFile = File(...)):
     """
     response = client.models.generate_content(
         model="gemini-2.5-flash-lite",
+
         contents=[
             types.Part.from_bytes(
                 data=await file.read(),
                 mime_type="image/jpeg",
             ),
-            "Give me a list of all the lego peices and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of peices. and make sure to place a newline after each item.",
-        ],
-        config=types.GenerateContentConfig(temperature=0),
+            "Give me a list of all the lego pieces and their count in this image without any extra words. Place a bullet point (*) before each item. After the item name, place a colon followed by a space followed by the number of pieces, start off each line with the colour of the block, followed by the brick type, followed by a colon, followed by a space, and finally the number of bricks. and make sure to place a newline after each item. Do not go past 100 different blocks",
+        ]
     )
     print(response.text)
     test = response.text
