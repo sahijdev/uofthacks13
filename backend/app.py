@@ -19,7 +19,7 @@ DEBUG_SHOW = False  # set True to pop up per-brick crops locally
 brick_recognition_url = "https://api.brickognize.com/predict/parts/"
 
 app = FastAPI()
-test = ''
+test = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,13 +38,13 @@ class Build(BaseModel):
 async def save_build(build: Build):
     openscad_script = call_workflow(build.prompt, test)
     print("Started generating")
-    response = client.models.generate_content(
+    """response = client.models.generate_content(
         model="gemini-2.5-flash-lite",
           contents=
       'Take the follow OPEN SCAD script and change each brick into the following form: 1) Your OpenSCAD input should be a BRICK DSL. Example supported lines: brick("2x2", xStud=0, yStud=0, zLevel=0, rotY=0, color [0.9,0.1,0.1]); brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]); Supported fields: | kind: "2x2" (first argument) | position: either (xStud,yStud,zLevel) OR (xMm,yMm,zMm) | rotation: rotY=deg OR rot=[rx,ry,rz] | color: color=[r,g,b] (0..1). Only output the final code NOTHING ELSE. Here is the script:' + openscad_script,
-    )
-    print(response.text)
-    return {"status": "ok", "prompt_received": response.text}
+    )"""
+    print(openscad_script)
+    return {"status": "ok", "prompt_received": openscad_script}
 
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):

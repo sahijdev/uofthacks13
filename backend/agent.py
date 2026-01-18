@@ -34,7 +34,7 @@ def call_workflow(user_request: str, pieces_list: str):
     {"user_request": HumanMessage(content=user_request),
      "pieces_list": pieces_list}
     )
-    return state["final_script"]
+    return state
 
 # Agent functions
 def architect_agent(state: State):
@@ -82,70 +82,76 @@ Return ONLY the list in this format:
     ]
 
     # ==============================
-    # Step 2: Incremental OpenSCAD build
+    # Step 2: Incremental Brick DSL generation
     # ==============================
-    openscad_parts: list[str] = []
+    dsl_lines: list[str] = []
 
-    # Compact summary state sent to the LLM (NOT full code)
-    built_structures: list[str] = []
+    # Compact state for the LLM (NOT full code)
+    placed_summary: list[str] = []
 
-    for i, step in enumerate(build_steps):
-        # Extract a concise structure identifier (before colon)
+    for step in build_steps:
         structure_name = step.split(":", 1)[0].strip()
 
-        structure_summary = (
-            "\n".join(f"- {s}" for s in built_structures)
-            if built_structures
+        existing = (
+            "\n".join(f"- {s}" for s in placed_summary)
+            if placed_summary
             else "- none"
         )
 
         step_prompt = f"""
-You are a LEGO OpenSCAD builder.
+You are a LEGO build compiler.
 
-Already built structures:
-{structure_summary}
+Your output MUST be written in the following BRICK DSL.
+DO NOT output OpenSCAD.
+DO NOT explain anything.
+ONLY output valid DSL lines.
+
+============================================================
+BRICK DSL FORMAT (REQUIRED):
+
+brick("2x2", xStud=0, yStud=0, zLevel=0, rotY=0, color=[0.9,0.1,0.1]);
+brick("2x2", xMm=12.3, yMm=7.0, zMm=19.2, rot=[0,90,0], color=[1,1,0]);
+
+Supported fields:
+- kind: first argument (e.g. "2x2")
+- position: either (xStud, yStud, zLevel) OR (xMm, yMm, zMm)
+- rotation: rotY=deg OR rot=[rx,ry,rz]
+- color: color=[r,g,b] (0..1)
+============================================================
+
+Already placed structures:
+{existing}
 
 Now add this structure:
 {step}
 
 Rules:
-- Use ONLY the LEGO brick template below
-- Ensure all pieces connect physically
-- Ensure NO overlaps or intersections
-- Position relative to existing structures
+- All bricks must connect physically to existing ones
+- No overlaps or intersections
+- Positions must be consistent with previous placements
+- Prefer stud-based placement (xStud/yStud/zLevel) unless rotation requires mm
+- Use reasonable LEGO colors
 
-Return ONLY the OpenSCAD code for THIS structure.
-
-LEGO brick template:
-// 2x2 brick
-module lego_brick(x_studs, y_studs){{
-   brick_x = x_studs * 8; brick_y = y_studs * 8;
-   difference(){{
-      cube([brick_x, brick_y, 9.6]);
-      translate([1.6, 1.6, 1.6])
-         cube([brick_x-3.2, brick_y-3.2, 9.6]);
-   }}
-   for (x=[0:x_studs-1])
-      for (y=[0:y_studs-1])
-         translate([x*8+4, y*8+4, 9.6])
-            cylinder(h=1.8, d=4.8, $fn=40);
-}}
+Return ONLY Brick DSL lines for THIS structure.
 """
-        step_code_msg = llm_reasoning.invoke(step_prompt)
-        step_code = step_code_msg.text.strip()
+        step_msg = llm_reasoning.invoke(step_prompt)
+        step_dsl = step_msg.text.strip()
 
-        # Append results
-        openscad_parts.append(step_code)
-        built_structures.append(structure_name)
+        if step_dsl:
+            dsl_lines.append(step_dsl)
+            placed_summary.append(structure_name)
 
-        # Optional debug output
-        print(f"Added: {structure_name}")
+        # Optional debug
+        print(f"Added DSL for: {structure_name}")
         print("----------------------------")
 
     # ==============================
-    # Step 3: Final script
+    # Step 3: Final DSL script
     # ==============================
-    return {"final_script": "\n\n".join(openscad_parts)}
+    final_script = "\n".join(dsl_lines)
+
+    return {"final_script": final_script}
+
 
 # Conditional edge function
 def route_evaluator(state: State):
@@ -157,13 +163,13 @@ def route_evaluator(state: State):
 
 load_dotenv()
 llm = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct")
-llm_reasoning = ChatGroq(model="llama-3.3-70b-versatile")
+llm_reasoning = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct")
 evaluator = llm.with_structured_output(Feedback)
 
 state_graph = StateGraph(State)
 state_graph.add_node("architect_agent", architect_agent)
 state_graph.add_node("evaluator_agent", evaluator_agent)
-state_graph.add_node("builder_agent", builder_agent)
+state_graph.add_node("builder_agent", builder_agent)    
 
 state_graph.add_edge(START, "architect_agent")
 state_graph.add_edge("architect_agent", "evaluator_agent")
